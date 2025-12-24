@@ -1,0 +1,274 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Filament Tracker (Local)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;max-width:980px;margin:18px auto;padding:8px}
+    .grid{display:flex;gap:12px;flex-wrap:wrap}
+    .card{border:1px solid #ddd;border-radius:8px;padding:12px;flex:1 1 280px}
+    table{width:100%;border-collapse:collapse}
+    td,th{padding:6px;border-bottom:1px solid #eee;font-size:13px}
+    label{display:block;margin-top:8px;font-size:13px}
+    input,select{width:100%;padding:6px;margin-top:4px;border:1px solid #ccc;border-radius:6px;font-size:13px}
+    button{padding:6px 10px;border-radius:6px;border:0;background:#0b79d0;color:#fff;cursor:pointer;font-size:12px}
+    button.danger{background:#c0392b}
+    .muted{color:#999;font-size:12px}
+    .btn-row{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+  </style>
+</head>
+<body>
+  <h2>Filament Tracker (Local, Weight-Based)</h2>
+  <div class="grid">
+    <div class="card" style="flex:2">
+      <h3>Add New Spool</h3>
+      <label>Name<input id="name" placeholder="e.g. Bambu PLA White"></label>
+      <label>Brand<input id="brand" placeholder="Optional"></label>
+      <label>Color<input id="color" placeholder="Optional"></label>
+      <label>Material<input id="material" placeholder="Optional, e.g. PLA / PETG"></label>
+      <label>Starting Weight (g)<input id="start_grams" type="number" value="1000"></label>
+      <div class="btn-row">
+        <button onclick="createSpool()">Add Spool</button>
+        <button onclick="refresh()">Refresh List</button>
+        <a href="/api/export/csv"><button type="button">Export CSV</button></a>
+      </div>
+      <div id="msg" class="muted"></div>
+    </div>
+
+    <div class="card">
+      <h3>Spool List</h3>
+      <div id="spools-list">Loading…</div>
+      <div class="muted">Sorted by creation time (newest first).</div>
+    </div>
+  </div>
+
+  <div id="detail" style="margin-top:18px"></div>
+
+<script>
+async function api(path, opts){
+  opts = opts || {};
+  opts.headers = opts.headers || {};
+  if(!(opts.method === 'GET' || opts.method === 'HEAD')){
+    opts.headers['Content-Type'] = 'application/json';
+  }
+  if(opts.body && typeof opts.body === 'object'){
+    opts.body = JSON.stringify(opts.body);
+  }
+  const r = await fetch(path, opts);
+  let data = null;
+  try { data = await r.json(); } catch(e) {}
+  if(!r.ok){
+    const msg = data && data.error ? data.error : ('HTTP ' + r.status);
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function setMsg(text){
+  document.getElementById('msg').innerText = text || '';
+}
+
+async function createSpool(){
+  const data = {
+    name: document.getElementById('name').value || 'untitled',
+    brand: document.getElementById('brand').value || '',
+    color: document.getElementById('color').value || '',
+    material: document.getElementById('material').value || '',
+    start_grams: Number(document.getElementById('start_grams').value || 0)
+  };
+  try{
+    await api('/api/spools', {method:'POST', body:data});
+    document.getElementById('name').value = '';
+    document.getElementById('brand').value = '';
+    document.getElementById('color').value = '';
+    document.getElementById('material').value = '';
+    document.getElementById('start_grams').value = 1000;
+    setMsg('Spool added successfully.');
+    refresh();
+  }catch(e){
+    setMsg('Failed to create spool: ' + e.message);
+  }
+}
+
+async function refresh(){
+  let spools;
+  try{
+    spools = await api('/api/spools');
+  }catch(e){
+    document.getElementById('spools-list').innerText = 'Failed to load: ' + e.message;
+    return;
+  }
+
+  const list = document.getElementById('spools-list');
+  if(!Array.isArray(spools) || spools.length === 0){
+    list.innerHTML = '<div class="muted">No spools yet. Please add one.</div>';
+    return;
+  }
+
+  list.innerHTML = spools.map(s => {
+    const remain = (s.remaining_grams || 0).toFixed(1);
+    return `<div style="padding:6px;border-bottom:1px dashed #eee">
+      <strong>${s.name||''}</strong> <small>${s.brand||''}</small><br>
+      Color: ${s.color||''} · ${s.material||''}<br>
+      Remaining: <strong>${remain} g</strong>
+      <div class="muted">${s.created_at ? s.created_at.substring(0,19).replace('T',' ') : ''}</div>
+      <div class="btn-row">
+        <button onclick="showDetail(${s.id})">Details / Usage</button>
+        <button class="danger" onclick="deleteSpool(${s.id})">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function deleteSpool(id){
+  if(!confirm('Are you sure you want to delete this spool and all usage records?')) return;
+  try{
+    await api('/api/spools/' + id, {method:'DELETE'});
+    document.getElementById('detail').innerHTML = '';
+    refresh();
+  }catch(e){
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+async function showDetail(spool_id){
+  let s, usages;
+  try{
+    s = await api('/api/spools/' + spool_id);
+    usages = await api('/api/usages/' + spool_id);
+  }catch(e){
+    alert('Failed to load details: ' + e.message);
+    return;
+  }
+
+  const remain = (s.remaining_grams || 0).toFixed(1);
+
+  let html = `
+    <div class="card">
+      <h3>${s.name} — Remaining ${remain} g</h3>
+      <div class="muted">
+        ${s.brand || ''} ${s.color || ''} ${s.material || ''}<br>
+        Starting weight: ${s.start_grams || 0} g
+      </div>
+      <h4 style="margin-top:10px">Log Usage</h4>
+      <label>Used Weight (g)<input id="u_grams" type="number" min="0.01" step="0.01"></label>
+      <label>Note (optional)<input id="u_note"></label>
+      <div class="btn-row">
+        <button onclick="submitUsage(${spool_id})">Submit</button>
+      </div>
+      <h4 style="margin-top:14px">Recent Usage</h4>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Weight (g)</th>
+            <th>Note</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="usage_rows"></tbody>
+      </table>
+      <div class="muted">Remaining weight updates automatically after edit or delete.</div>
+    </div>
+  `;
+
+  document.getElementById('detail').innerHTML = html;
+
+  const tbody = document.getElementById('usage_rows');
+  if(!Array.isArray(usages) || usages.length === 0){
+    tbody.innerHTML = '<tr><td colspan="4" class="muted">No records yet.</td></tr>';
+  }else{
+    tbody.innerHTML = usages.map(u => `
+      <tr id="usage-row-${u.id}">
+        <td>${new Date(u.created_at).toLocaleString()}</td>
+        <td>${u.used_grams ? u.used_grams.toFixed(2) : ''}</td>
+        <td>${u.note || ''}</td>
+        <td>
+          <button onclick="startEditUsage(${spool_id}, ${u.id})">Edit</button>
+          <button class="danger" onclick="deleteUsage(${spool_id}, ${u.id})">Delete</button>
+        </td>
+      </tr>
+    `).join('');
+  }
+}
+
+async function submitUsage(spool_id){
+  const gramsVal = document.getElementById('u_grams').value;
+  const noteVal = document.getElementById('u_note').value || '';
+
+  if(!gramsVal){
+    alert('Please enter used weight.');
+    return;
+  }
+
+  const payload = {
+    spool_id,
+    used_grams: Number(gramsVal),
+    note: noteVal
+  };
+
+  try{
+    await api('/api/usages', {method:'POST', body:payload});
+    showDetail(spool_id);
+    refresh();
+  }catch(e){
+    alert('Submit failed: ' + e.message);
+  }
+}
+
+async function deleteUsage(spool_id, usage_id){
+  if(!confirm('Are you sure you want to delete this usage record?')) return;
+  try{
+    await api('/api/usage/' + usage_id, {method:'DELETE'});
+    showDetail(spool_id);
+    refresh();
+  }catch(e){
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+async function startEditUsage(spool_id, usage_id){
+  let u;
+  try{
+    u = await api('/api/usage/' + usage_id);
+  }catch(e){
+    alert('Failed to load record: ' + e.message);
+    return;
+  }
+  const row = document.getElementById('usage-row-' + usage_id);
+  if(!row) return;
+
+  row.innerHTML = `
+    <td>${new Date(u.created_at).toLocaleString()}</td>
+    <td><input id="e_grams_${usage_id}" type="number" value="${u.used_grams || ''}" style="width:80px"></td>
+    <td><input id="e_note_${usage_id}" value="${u.note || ''}"></td>
+    <td>
+      <button onclick="submitEditUsage(${spool_id}, ${usage_id})">Save</button>
+      <button onclick="showDetail(${spool_id})">Cancel</button>
+    </td>
+  `;
+}
+
+async function submitEditUsage(spool_id, usage_id){
+  const gramsVal = document.getElementById('e_grams_' + usage_id).value;
+  const noteVal = document.getElementById('e_note_' + usage_id).value || '';
+
+  const payload = { note: noteVal };
+  if(gramsVal){
+    payload.used_grams = Number(gramsVal);
+  }
+
+  try{
+    await api('/api/usage/' + usage_id, {method:'PUT', body:payload});
+    showDetail(spool_id);
+    refresh();
+  }catch(e){
+    alert('Save failed: ' + e.message);
+  }
+}
+
+window.onload = refresh;
+</script>
+</body>
+</html>
