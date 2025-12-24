@@ -24,6 +24,8 @@ It intentionally avoids:
 
 You log what you use, and it tells you what remains.
 
+![main_page_view](./imgs/filament_tracker_main_page.png)
+
 ---
 
 ### Features
